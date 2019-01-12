@@ -1,67 +1,100 @@
 #!/bin/sh
+is_dafang=false															## Set true for Dafang
+is_xiaofang=false 														## Set true for Xiaofang
+is_sannce=false 														## Set true for Sannce
 
-# Set mdev
+
+## Set mdev
 echo /sbin/mdev > /proc/sys/kernel/hotplug
 /sbin/mdev -s && echo "mdev is ok......"
 
-# create console and null node for nfsroot
-#mknod -m 600 /dev/console c 5 1
-#mknod -m 666 /dev/null c 1 3
 
-# Setup the global environment
+## Setup the global environment
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH=/system/bin:$PATH
 export PATH=$PATH:/opt/bin:/opt/sbin
 export LD_LIBRARY_PATH=/system/lib
 export LD_LIBRARY_PATH=/thirdlib:$LD_LIBRARY_PATH
 LOGPATH="/var/log/startup.log"
+mount -t jffs2 /dev/mtdblock9 /params 			## Mount the params partition to read the MAC Address
+MAC=$(grep MAC < /params/config/.product_config | cut -c16-27 | sed 's/\(..\)/\1:/g;s/:$//')
 
-
-# networking
-ifconfig lo up
-# ifconfig eth0 192.168.1.80
 
 ## Load some common functions:
 . /usr/scripts/common_functions.sh
 echo "Loaded common functions" >> $LOGPATH
 
-# Start the telnet daemon
-# telnetd &
-
-# Set the system time from the hardware clock
-# hwclock -s
-
-# Set the GPIO PC13 to high, make the USB Disk can be use
-cd /sys/class/gpio
-echo 77 > export       #申请GPIO
-cd gpio77
-echo out > direction   #设置为输出模式
-echo 0 > active_low    #value是0,表示低电平。value是1,表示高电平
-echo 1 > value         #设置电平（输出模式）
 
 ## Initialize the GPIOS:
-for pin in 25 26 38 39 49; do
+for pin in 25 26 38 39 49 77; do
   init_gpio $pin
 done
-# the ir_led pin is a special animal and needs active low
-echo 1 > /sys/class/gpio/gpio49/active_low
-
+setgpio 77 1 																## Set the GPIO PC13 to high, make the USB Disk can be use
+echo 1 > /sys/class/gpio/gpio49/active_low 	## the ir_led pin is a special animal and needs active low
 echo "Initialized gpios" >> $LOGPATH
 
-# Mount the params partition
-mount -t jffs2 /dev/mtdblock9 /params
 
+## Loading device specific modules
 KERNEL_VERSION=$(uname -r)
+if [ $is_dafang = true ]; then
+  echo "Selected Dafang" >> $LOGPATH
+  has_motor=true
+  ## Network
+  insmod /lib/modules/$KERNEL_VERSION/rtl8189es.ko rtw_initmac="$MAC"
+  ## Camera
+  insmod /lib/modules/$KERNEL_VERSION/sinfo.ko
+  echo 1 >/proc/jz/sinfo/info
+  sensor=$(grep -m1 -oE 'jxf[0-9]*$' /proc/jz/sinfo/info)
+  echo "Determined image sensor model as $sensor" >> $LOGPATH
+  insmod /lib/modules/$KERNEL_VERSION/tx-isp-t20.ko isp_clk=100000000
+  if [ $sensor = 'jxf22' ]; then
+    insmod /lib/modules/$KERNEL_VERSION/sensor_jxf22.ko data_interface=2 pwdn_gpio=-1 reset_gpio=18 sensor_gpio_func=0
+  else
+    insmod /lib/modules/$KERNEL_VERSION/sensor_jxf23.ko data_interface=2 pwdn_gpio=-1 reset_gpio=18 sensor_gpio_func=0
+  fi
+elif [ $is_xiaofang = true ]; then
+  echo "Selected Xiaofang" >> $LOGPATH
+  has_motor=false
+  insmod /lib/modules/$KERNEL_VERSION/exfat_xf.ko
+  ## Network
+  insmod /lib/modules/$KERNEL_VERSION/rtl8189fs.ko rtw_initmac="$MAC"
+  ## Camera
+  insmod /lib/modules/$KERNEL_VERSION/sinfo_xf.ko
+  insmod /lib/modules/$KERNEL_VERSION/tx-isp_xf.ko isp_clk=100000000
+  echo 1 >/proc/jz/sinfo/info
+  sensor=$(grep -m1 -oE 'jxf[0-9]*$' /proc/jz/sinfo/info)
+  echo "Determined image sensor model as $sensor" >> $LOGPATH
+  if [ $sensor = 'jxf22' ]; then
+    insmod /lib/modules/$KERNEL_VERSION/sensor_jxf22_xf.ko
+  else
+    insmod /lib/modules/$KERNEL_VERSION/sensor_jxf23_xf.ko
+  fi
+elif [ is_sannce = true ]; then
+  echo "Selected Sannce" >> $LOGPATH
+  has_motor=true
+  ## Network
+  insmod /lib/modules/$KERNEL_VERSION/mt7601Usta.ko
+  ## Camera
+  insmod /lib/modules/$KERNEL_VERSION/tx-isp-t10.ko isp_clk=100000000
+  insmod /lib/modules/$KERNEL_VERSION/sensor_jxh62.ko pwdn_gpio=-1 reset_gpio=18 sensor_gpio_func=0
+fi
 
-# Start Network:
-MAC=$(grep MAC < /params/config/.product_config | cut -c16-27 | sed 's/\(..\)/\1:/g;s/:$//')
-# insmod /lib/modules/$KERNEL_VERSION/rtl8189es.ko rtw_initmac="$MAC" # Uncomment for Dafang
-# insmod /lib/modules/$KERNEL_VERSION/rtl8189fs.ko rtw_initmac="$MAC" # Uncomment for XiaoFang s1 && Wyzecam V2
-# insmod /lib/modules/$KERNEL_VERSION/mt7601Usta.ko # Uncomment for Sannce
+if [ $has_motor ]; then
+  insmod /lib/modules/$KERNEL_VERSION/sample_motor.ko
+  ## Calibrate the motors for older models with endstops:
+  #motor hcalibrate
+  #motor vcalibrate
 
+  ## Calibrate the motors for newer models without endstops:
+  #motor calibrate
+fi
+echo "Loaded device specific modules" >> $LOGPATH
 
+## Start Network:
+ifconfig lo up
 if [ ! -f /etc/wpa_supplicant.conf ]; then
   echo "Warning: You have to configure wpa_supplicant in order to use wifi. Please see /etc/wpa_supplicant.conf.dist for further instructions."
+  echo "Warning: You have to configure wpa_supplicant in order to use wifi. Please see /etc/wpa_supplicant.conf.dist for further instructions." >> $LOGPATH
 else
   wpa_supplicant_status="$(wpa_supplicant -d -B -i wlan0 -c /etc/wpa_supplicant.conf -P /var/run/wpa_supplicant.pid)"
   echo "wpa_supplicant: $wpa_supplicant_status" >> $LOGPATH
@@ -81,48 +114,6 @@ busybox --install
 [ ! -e /usr/bin/ssh ] && ln -s dropbearmulti /usr/bin/ssh
 [ ! -e /usr/bin/scp ] && ln -s dropbearmulti /usr/bin/scp
 [ ! -e /usr/bin/dropbear ] && ln -s dropbearmulti /usr/bin/dropbear
-
-# Start Motor:
-insmod /lib/modules/$KERNEL_VERSION/sample_motor.ko
-
-# Calibrate the motors for older models with endstops:
-# motor hcalibrate
-# motor vcalibrate
-
-# Calibrate the motors for newer models without endstops:
-# motor calibrate
-
-
-
-
-# Start the image sensor:
-
-# Uncomment for Sannce:
-#insmod /lib/modules/$KERNEL_VERSION/tx-isp-t10.ko isp_clk=100000000
-#insmod /lib/modules/$KERNEL_VERSION/sensor_jxh62.ko pwdn_gpio=-1 reset_gpio=18 sensor_gpio_func=0
-
-# Uncomment for Dafang:
-
-# Determine the image sensor model:
-insmod /lib/modules/$KERNEL_VERSION/sinfo.ko
-echo 1 >/proc/jz/sinfo/info
-sensor=$(grep -m1 -oE 'jxf[0-9]*$' /proc/jz/sinfo/info)
-echo "Determined image sensor model as $sensor" >> $LOGPATH
-
-insmod /lib/modules/$KERNEL_VERSION/tx-isp-t20.ko isp_clk=100000000
-if [ $sensor = 'jxf22' ]; then
-  insmod /lib/modules/$KERNEL_VERSION/sensor_jxf22.ko data_interface=2 pwdn_gpio=-1 reset_gpio=18 sensor_gpio_func=0
-else
-  insmod /lib/modules/$KERNEL_VERSION/sensor_jxf23.ko data_interface=2 pwdn_gpio=-1 reset_gpio=18 sensor_gpio_func=0
-fi
-
-
-
-
-
-
-
-# Start User Applications:
 
 ## Start FTP & SSH Server:
 dropbear_status=$(dropbearmulti dropbear -R)
@@ -148,12 +139,12 @@ echo "lighttpd: $lighttpd_status" >> $LOGPATH
 
 ## Configure OSD:
 if [ -f /usr/controlscripts/configureOsd ]; then
-    . /usr/controlscripts/configureOsd  2>/dev/null
+  . /usr/controlscripts/configureOsd  2>/dev/null
 fi
 
 ## Configure Motion:
 if [ -f /usr/controlscripts/configureMotion ]; then
-    . /usr/controlscripts/configureMotion  2>/dev/null
+  . /usr/controlscripts/configureMotion  2>/dev/null
 fi
 
 ## Autostart all enabled services:
