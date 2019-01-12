@@ -7,3 +7,7 @@ etc/lighttpd.pem
 etc/TZ
 .ssh/*
 .idea/*
+bin/*
+usr/bin/*
+sbin/*
+usr/sbin/*
