@@ -51,7 +51,7 @@ start()
 
     ## Audio
     if [ "$AUDIOFORMAT" != "OFF" ] ; then
-        AUDIOPARAM="-E $AUDIOFORMAT:$AUDIOINBR:$AUDIOOUTBR"
+        AUDIOPARAM="-a -E $AUDIOFORMAT:$AUDIOINBR:$AUDIOOUTBR"
         setconf -k h -v "$HWVOLUME" 2>/dev/null
         setconf -k i -v "$SWVOLUME" 2>/dev/null
         setconf -k q -v "$FILTER" 2>/dev/null
